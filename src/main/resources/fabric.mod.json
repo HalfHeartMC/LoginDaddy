@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "logindaddy",
+  "version": "${version}",
+  "name": "LoginDaddy",
+  "description": "A Fabric mod for private friend servers. Requires players to have the mod installed on their client, be on the whitelist of this mod (not the server whitelist) and authenticate with a password before they can play.",
+  "authors": [
+    "Half Heart [HalfHeartMC]"
+  ],
+  "contact": {
+    "homepage": "",
+    "sources": ""
+  },
+  "license": "MIT",
+  "icon": "assets/logindaddy/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "org.halfheart.logindaddy.LoginDaddy"
+    ],
+    "client": [
+      "org.halfheart.logindaddy.client.LoginDaddyClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}
