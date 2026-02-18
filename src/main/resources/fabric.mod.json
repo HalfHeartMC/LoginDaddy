@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "logindaddy",
   "version": "${version}",
-  "name": "LoginDaddy",
+  "name": "Login Daddy",
   "description": "A Fabric mod for private friend servers. Requires players to have the mod installed on their client, be on the whitelist of this mod (not the server whitelist) and authenticate with a password before they can play.",
   "authors": [
     "Half Heart [HalfHeartMC]"
