@@ -45,7 +45,7 @@ mysql.username=root
 mysql.password=
 ```
 
-><h3> ⚠️ Never commit "logindaddy.properties" to version control.</h3><h3><B>It contains your database credentials.</B></h3>
+><h3>⚠️ Never commit "logindaddy.properties" to version control or show it to anyone!</h3><h3><B>It contains your database credentials.</B></h3>
 
 ## Commands
 
