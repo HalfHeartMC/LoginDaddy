@@ -22,6 +22,10 @@
       "org.halfheart.logindaddy.client.LoginDaddyClient"
     ]
   },
+  "mixins": [
+    "logindaddy.mixins.json",
+    "logindaddy.client.mixins.json"
+  ],
   "depends": {
     "fabricloader": ">=${loader_version}",
     "fabric-api": "*",

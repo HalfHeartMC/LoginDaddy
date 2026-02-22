@@ -86,7 +86,8 @@ public class RegisterCommand {
 
         dispatcher.register(
                 CommandManager.literal("resetpassword")
-                        .requires(src -> src.getEntity() == null)
+                        .requires(src -> src.getEntity() == null ||
+                                (src.getPlayer() != null && src.getServer().getPlayerManager().isOperator(src.getPlayer().getPlayerConfigEntry())))
                         .then(CommandManager.argument("username", StringArgumentType.word())
                                 .then(CommandManager.argument("newPassword", StringArgumentType.greedyString())
                                         .executes(context -> {

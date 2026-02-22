@@ -17,6 +17,26 @@ public class DatabaseManager {
     private static final int KEY_LENGTH  = 256;
     private static final String ALGORITHM = "PBKDF2WithHmacSHA256";
 
+    public static class PlayerData {
+        public final double x, y, z;
+        public final float yaw, pitch;
+        public final float health;
+        public final int food;
+        public final float saturation;
+        public final boolean died;
+        public final String dimension;
+
+        public PlayerData(double x, double y, double z, float yaw, float pitch,
+                          float health, int food, float saturation, boolean died,
+                          String dimension) {
+            this.x = x; this.y = y; this.z = z;
+            this.yaw = yaw; this.pitch = pitch;
+            this.health = health; this.food = food; this.saturation = saturation;
+            this.died = died;
+            this.dimension = dimension != null ? dimension : "minecraft:overworld";
+        }
+    }
+
     public DatabaseManager(ConfigManager config) {
         this.databaseType = config.getDatabaseType();
         try {
@@ -44,19 +64,119 @@ public class DatabaseManager {
     }
 
     private void createTables() {
-        String whitelist = databaseType.equalsIgnoreCase("mysql")
+        boolean mysql = databaseType.equalsIgnoreCase("mysql");
+
+        String whitelist = mysql
                 ? "CREATE TABLE IF NOT EXISTS whitelist (username VARCHAR(255) PRIMARY KEY)"
                 : "CREATE TABLE IF NOT EXISTS whitelist (username TEXT PRIMARY KEY COLLATE NOCASE)";
 
-        String users = databaseType.equalsIgnoreCase("mysql")
+        String users = mysql
                 ? "CREATE TABLE IF NOT EXISTS users (username VARCHAR(255) PRIMARY KEY, password_hash TEXT NOT NULL)"
                 : "CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY COLLATE NOCASE, password_hash TEXT NOT NULL)";
+
+        String playerData = mysql
+                ? "CREATE TABLE IF NOT EXISTS player_data (" +
+                "uuid VARCHAR(36) PRIMARY KEY, " +
+                "x DOUBLE NOT NULL, y DOUBLE NOT NULL, z DOUBLE NOT NULL, " +
+                "yaw FLOAT NOT NULL, pitch FLOAT NOT NULL, " +
+                "health FLOAT NOT NULL, food INT NOT NULL, saturation FLOAT NOT NULL, " +
+                "died TINYINT(1) NOT NULL DEFAULT 0, " +
+                "dimension VARCHAR(100) NOT NULL DEFAULT 'minecraft:overworld')"
+                : "CREATE TABLE IF NOT EXISTS player_data (" +
+                "uuid TEXT PRIMARY KEY, " +
+                "x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, " +
+                "yaw REAL NOT NULL, pitch REAL NOT NULL, " +
+                "health REAL NOT NULL, food INTEGER NOT NULL, saturation REAL NOT NULL, " +
+                "died INTEGER NOT NULL DEFAULT 0, " +
+                "dimension TEXT NOT NULL DEFAULT 'minecraft:overworld')";
 
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(whitelist);
             stmt.execute(users);
+            stmt.execute(playerData);
+
+            if (mysql) {
+                silentAlterAdd("ALTER TABLE player_data ADD COLUMN dimension VARCHAR(100) NOT NULL DEFAULT 'minecraft:overworld'");
+            } else {
+                silentAlterAdd("ALTER TABLE player_data ADD COLUMN dimension TEXT NOT NULL DEFAULT 'minecraft:overworld'");
+            }
         } catch (SQLException e) {
             LoginDaddy.LOGGER.error("Failed to create tables", e);
+        }
+    }
+
+    private void silentAlterAdd(String sql) {
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(sql);
+        } catch (SQLException ignored) {
+        }
+    }
+
+    public void savePlayerData(String uuid,
+                               double x, double y, double z, float yaw, float pitch,
+                               float health, int food, float saturation,
+                               boolean died, String dimension) {
+        if (connection == null) return;
+
+        String sql = databaseType.equalsIgnoreCase("mysql")
+                ? "INSERT INTO player_data " +
+                "(uuid,x,y,z,yaw,pitch,health,food,saturation,died,dimension) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE " +
+                "x=VALUES(x), y=VALUES(y), z=VALUES(z), " +
+                "yaw=VALUES(yaw), pitch=VALUES(pitch), " +
+                "health=VALUES(health), food=VALUES(food), saturation=VALUES(saturation), " +
+                "died=VALUES(died), dimension=VALUES(dimension)"
+                : "INSERT OR REPLACE INTO player_data " +
+                "(uuid,x,y,z,yaw,pitch,health,food,saturation,died,dimension) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, uuid);
+            stmt.setDouble(2, x);
+            stmt.setDouble(3, y);
+            stmt.setDouble(4, z);
+            stmt.setFloat(5, yaw);
+            stmt.setFloat(6, pitch);
+            stmt.setFloat(7, health);
+            stmt.setInt(8, food);
+            stmt.setFloat(9, saturation);
+            stmt.setInt(10, died ? 1 : 0);
+            stmt.setString(11, dimension != null ? dimension : "minecraft:overworld");
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            LoginDaddy.LOGGER.error("Failed to save player data", e);
+        }
+    }
+
+    public PlayerData loadAndDeletePlayerData(String uuid) {
+        if (connection == null) return null;
+        try {
+            PlayerData data = null;
+            try (PreparedStatement stmt = connection.prepareStatement(
+                    "SELECT x,y,z,yaw,pitch,health,food,saturation,died,dimension " +
+                            "FROM player_data WHERE uuid=?")) {
+                stmt.setString(1, uuid);
+                ResultSet rs = stmt.executeQuery();
+                if (rs.next()) {
+                    data = new PlayerData(
+                            rs.getDouble("x"),    rs.getDouble("y"),    rs.getDouble("z"),
+                            rs.getFloat("yaw"),   rs.getFloat("pitch"),
+                            rs.getFloat("health"),rs.getInt("food"),    rs.getFloat("saturation"),
+                            rs.getInt("died") == 1,
+                            rs.getString("dimension"));
+                }
+            }
+            if (data != null) {
+                try (PreparedStatement del = connection.prepareStatement(
+                        "DELETE FROM player_data WHERE uuid=?")) {
+                    del.setString(1, uuid);
+                    del.executeUpdate();
+                }
+            }
+            return data;
+        } catch (SQLException e) {
+            LoginDaddy.LOGGER.error("Failed to load player data", e);
+            return null;
         }
     }
 
@@ -75,6 +195,19 @@ public class DatabaseManager {
         return executeUpdate("DELETE FROM whitelist WHERE LOWER(username) = LOWER(?)", username) > 0;
     }
 
+    public java.util.List<String> getWhitelistedPlayers() {
+        java.util.List<String> players = new java.util.ArrayList<>();
+        if (connection == null) return players;
+        try (PreparedStatement stmt = connection.prepareStatement(
+                "SELECT username FROM whitelist ORDER BY username ASC")) {
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) players.add(rs.getString("username"));
+        } catch (SQLException e) {
+            LoginDaddy.LOGGER.error("Error fetching whitelist", e);
+        }
+        return players;
+    }
+
     public boolean isRegistered(String username) {
         return queryExists("SELECT username FROM users WHERE LOWER(username) = LOWER(?)", username);
     }
@@ -88,8 +221,9 @@ public class DatabaseManager {
     }
 
     public boolean verifyPassword(String username, String password) {
-        String sql = "SELECT password_hash FROM users WHERE LOWER(username) = LOWER(?)";
-        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+        if (connection == null) return false;
+        try (PreparedStatement stmt = connection.prepareStatement(
+                "SELECT password_hash FROM users WHERE LOWER(username) = LOWER(?)")) {
             stmt.setString(1, username);
             ResultSet rs = stmt.executeQuery();
             if (rs.next()) return checkPassword(password, rs.getString("password_hash"));

@@ -15,7 +15,7 @@ Join/leave messages and tab list are hidden until authentication is complete.
 ## Requirements
 
 - Minecraft 1.21.11
-- Fabric Loader 0.18.4+
+- Fabric Loader 0.18.2+
 - Fabric API
 
 ## Setup

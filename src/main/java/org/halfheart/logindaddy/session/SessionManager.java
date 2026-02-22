@@ -8,19 +8,20 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class SessionManager {
 
-    private static final Set<UUID> loggedInPlayers = new HashSet<>();
-    private static final Map<UUID, GameMode> originalGameModes = new HashMap<>();
+    private static final Set<UUID>           loggedInPlayers  = ConcurrentHashMap.newKeySet();
+    private static final Map<UUID, GameMode> originalGameModes = new ConcurrentHashMap<>();
     private static final Map<String, CachedSession> ipSessionCache = new ConcurrentHashMap<>();
-    private static final long SESSION_CACHE_DURATION = 24 * 60 * 60 * 1000;
+
+    private static final long SESSION_CACHE_DURATION = 24L * 60 * 60 * 1000;
 
     public static class CachedSession {
         public final String username;
         public final String ip;
-        public final long timestamp;
+        public final long   timestamp;
 
         public CachedSession(String username, String ip) {
-            this.username = username;
-            this.ip = ip;
+            this.username  = username;
+            this.ip        = ip;
             this.timestamp = System.currentTimeMillis();
         }
 
@@ -88,10 +89,9 @@ public class SessionManager {
     }
 
     public static String getPlayerIP(ServerPlayerEntity player) {
-        if (player.networkHandler == null || player.networkHandler.getPlayer().getIp() == null) {
-            return null;
-        }
+        if (player.networkHandler == null) return null;
         String ip = player.networkHandler.player.getIp();
+        if (ip == null) return null;
         if (ip.contains("/")) ip = ip.substring(ip.indexOf("/") + 1);
         if (ip.contains(":")) ip = ip.substring(0, ip.indexOf(":"));
         return ip;

@@ -1,6 +1,7 @@
 package org.halfheart.logindaddy.limbo;
 
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
@@ -18,6 +19,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.world.GameMode;
 import net.minecraft.world.World;
 import org.halfheart.logindaddy.LoginDaddy;
+import org.halfheart.logindaddy.network.LoginDaddyPayload;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -39,6 +41,9 @@ public class LimboManager {
 
     private static final Set<UUID> preLimbo = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, double[]> returnPoints = new ConcurrentHashMap<>();
+    private static final Map<UUID, String> returnDimensions = new ConcurrentHashMap<>();
+    private static final Map<UUID, double[]> preResolvedReturnPoints = new ConcurrentHashMap<>();
+    private static final Map<UUID, float[]> pendingStats = new ConcurrentHashMap<>();
     private static final Set<UUID> inLimbo = ConcurrentHashMap.newKeySet();
     private static final Set<UUID> pendingAuth = ConcurrentHashMap.newKeySet();
 
@@ -48,27 +53,47 @@ public class LimboManager {
         ServerTickEvents.END_SERVER_TICK.register(LimboManager::onServerTick);
     }
 
-    public static void markPreLimbo(UUID uuid) {
-        preLimbo.add(uuid);
+    public static void markPreLimbo(UUID uuid)  { preLimbo.add(uuid); }
+    public static boolean isPreLimbo(UUID uuid) { return preLimbo.contains(uuid); }
+
+    public static void setPreResolvedReturnPoint(UUID uuid, double x, double y, double z,
+                                                 float yaw, float pitch) {
+        preResolvedReturnPoints.put(uuid, new double[]{x, y, z, yaw, pitch});
     }
 
-    public static boolean isPreLimbo(UUID uuid) {
-        return preLimbo.contains(uuid);
+    public static boolean isPreResolvedSet(UUID uuid) {
+        return preResolvedReturnPoints.containsKey(uuid);
+    }
+
+    public static double[] consumePreResolvedReturnPoint(UUID uuid) {
+        return preResolvedReturnPoints.remove(uuid);
+    }
+
+    public static void setPendingStats(UUID uuid, float health, int food, float saturation) {
+        pendingStats.put(uuid, new float[]{health, food, saturation});
+    }
+
+    public static void setReturnDimension(UUID uuid, String dimensionId) {
+        if (dimensionId != null) returnDimensions.put(uuid, dimensionId);
     }
 
     public static void enterLimbo(ServerPlayerEntity player, MinecraftServer server,
                                   double returnX, double returnY, double returnZ,
-                                  float returnYaw, float returnPitch) {
+                                  float returnYaw, float returnPitch,
+                                  String dimensionId) {
         UUID uuid = player.getUuid();
         preLimbo.remove(uuid);
+
         returnPoints.put(uuid, new double[]{returnX, returnY, returnZ, returnYaw, returnPitch});
+        setReturnDimension(uuid, dimensionId != null ? dimensionId : "minecraft:overworld");
+
         inLimbo.add(uuid);
 
         ServerWorld limboWorld = server.getWorld(LIMBO_WORLD_KEY);
         if (limboWorld != null) {
             player.teleport(limboWorld, LIMBO_X, LIMBO_Y, LIMBO_Z, Set.of(), 0f, 0f, false);
         } else {
-            LoginDaddy.LOGGER.warn("[Limbo] Limbo world not loaded!");
+            LoginDaddy.LOGGER.warn("[Limbo] Limbo world not found! Is the dimension registered?");
         }
 
         player.changeGameMode(GameMode.SPECTATOR);
@@ -79,7 +104,8 @@ public class LimboManager {
 
         hideFromTabList(player, server);
         sendLimboScreen(player);
-        LoginDaddy.LOGGER.info("[Limbo] {} entered limbo", player.getName().getString());
+        LoginDaddy.LOGGER.info("[Limbo] {} entered limbo (from {})",
+                player.getName().getString(), dimensionId);
     }
 
     public static void tryRelease(ServerPlayerEntity player, MinecraftServer server) {
@@ -119,40 +145,39 @@ public class LimboManager {
 
     public static void releaseLimbo(ServerPlayerEntity player, MinecraftServer server) {
         UUID uuid = player.getUuid();
+        double[] rp        = returnPoints.get(uuid);
+        String dimensionId = returnDimensions.getOrDefault(uuid, "minecraft:overworld");
+        float[] stats      = pendingStats.remove(uuid);
         cleanup(uuid);
 
         player.removeStatusEffect(StatusEffects.BLINDNESS);
 
-        player.getHungerManager().setFoodLevel(20);
-        player.getHungerManager().setSaturationLevel(5.0f);
-        player.setHealth(player.getMaxHealth());
-
-        net.minecraft.server.network.ServerPlayerEntity.Respawn respawn = player.getRespawn();
-        ServerWorld respawnWorld;
-        double tx;
-        double ty;
-        double tz;
-        float  yaw;
-
-        if (respawn != null) {
-            respawnWorld = server.getWorld(respawn.respawnData().getDimension());
-            if (respawnWorld == null) respawnWorld = server.getOverworld();
-            net.minecraft.util.math.BlockPos rp = respawn.respawnData().getPos();
-            tx  = rp.getX() + 0.5;
-            ty  = rp.getY();
-            tz  = rp.getZ() + 0.5;
-            yaw = respawn.respawnData().yaw();
-        } else {
-            respawnWorld = server.getOverworld();
-            net.minecraft.world.WorldProperties.SpawnPoint sp = respawnWorld.getSpawnPoint();
-            net.minecraft.util.math.BlockPos sp2 = sp.getPos();
-            tx  = sp2.getX() + 0.5;
-            ty  = sp2.getY();
-            tz  = sp2.getZ() + 0.5;
-            yaw = sp.yaw();
+        if (stats != null) {
+            player.setHealth(stats[0]);
+            player.getHungerManager().setFoodLevel((int) stats[1]);
+            player.getHungerManager().setSaturationLevel(stats[2]);
         }
 
-        player.teleport(respawnWorld, tx, ty, tz, Set.of(), yaw, 0f, false);
+        RegistryKey<World> worldKey = RegistryKey.of(RegistryKeys.WORLD, Identifier.of(dimensionId));
+        ServerWorld targetWorld = server.getWorld(worldKey);
+        if (targetWorld == null) {
+            LoginDaddy.LOGGER.warn("[Limbo] Dimension '{}' not found, falling back to overworld", dimensionId);
+            targetWorld = server.getOverworld();
+        }
+
+        double tx, ty, tz;
+        float yaw, pitch;
+        if (rp != null) {
+            tx = rp[0]; ty = rp[1]; tz = rp[2];
+            yaw = (float) rp[3]; pitch = (float) rp[4];
+        } else {
+            net.minecraft.world.WorldProperties.SpawnPoint sp = targetWorld.getSpawnPoint();
+            net.minecraft.util.math.BlockPos sp2 = sp.getPos();
+            tx = sp2.getX() + 0.5; ty = sp2.getY(); tz = sp2.getZ() + 0.5;
+            yaw = sp.yaw(); pitch = 0f;
+        }
+
+        player.teleport(targetWorld, tx, ty, tz, Set.of(), yaw, pitch, false);
         player.changeGameMode(GameMode.SURVIVAL);
         player.sendAbilitiesUpdate();
 
@@ -161,72 +186,42 @@ public class LimboManager {
         player.networkHandler.sendPacket(new SubtitleS2CPacket(Text.literal("")));
 
         restoreToTabList(player, server);
-
         server.getPlayerManager().broadcast(
                 Text.literal("\u00a7e" + player.getName().getString() + " joined the game"), false);
 
         player.sendMessage(Text.literal("\u00a7a\u00a7l\u2714 Welcome to the server!"), false);
-        LoginDaddy.LOGGER.info("[Limbo] {} released to overworld", player.getName().getString());
+
+        ServerPlayNetworking.send(player, new LoginDaddyPayload(true));
+
+        LoginDaddy.LOGGER.info("[Limbo] {} released to {}", player.getName().getString(), dimensionId);
     }
 
     private static void hideFromTabList(ServerPlayerEntity player, MinecraftServer server) {
         PlayerRemoveS2CPacket removePacket = new PlayerRemoveS2CPacket(List.of(player.getUuid()));
         for (ServerPlayerEntity other : server.getPlayerManager().getPlayerList()) {
-            if (!other.getUuid().equals(player.getUuid())) {
+            if (!other.getUuid().equals(player.getUuid()))
                 other.networkHandler.sendPacket(removePacket);
-            }
         }
     }
 
     private static void restoreToTabList(ServerPlayerEntity player, MinecraftServer server) {
         PlayerListS2CPacket addPacket = new PlayerListS2CPacket(
                 EnumSet.of(PlayerListS2CPacket.Action.ADD_PLAYER, PlayerListS2CPacket.Action.UPDATE_LISTED),
-                List.of(player)
-        );
-        for (ServerPlayerEntity other : server.getPlayerManager().getPlayerList()) {
+                List.of(player));
+        for (ServerPlayerEntity other : server.getPlayerManager().getPlayerList())
             other.networkHandler.sendPacket(addPacket);
-        }
     }
 
     private static void teleportToReturnPoint(ServerPlayerEntity player, MinecraftServer server) {
         double[] rp = returnPoints.get(player.getUuid());
-        ServerWorld overworld = server.getWorld(World.OVERWORLD);
-        if (overworld == null) return;
-        if (rp != null) {
-            player.teleport(overworld, rp[0], rp[1], rp[2], Set.of(), (float) rp[3], (float) rp[4], false);
-        } else {
-            player.teleport(overworld, 0.5, 64, 0.5, Set.of(), 0f, 0f, false);
-        }
-    }
-
-    public static boolean isInLimbo(UUID uuid) {
-        return inLimbo.contains(uuid);
-    }
-
-    public static boolean isPendingAuth(UUID uuid) {
-        return pendingAuth.contains(uuid);
-    }
-
-    public static double[] getReturnPoint(UUID uuid) {
-        return returnPoints.get(uuid);
-    }
-
-    public static void removeFromLimbo(UUID uuid) {
-        cleanup(uuid);
-    }
-
-    public static void clearAll() {
-        preLimbo.clear();
-        returnPoints.clear();
-        inLimbo.clear();
-        pendingAuth.clear();
-    }
-
-    private static void cleanup(UUID uuid) {
-        preLimbo.remove(uuid);
-        returnPoints.remove(uuid);
-        inLimbo.remove(uuid);
-        pendingAuth.remove(uuid);
+        String dimensionId = returnDimensions.getOrDefault(player.getUuid(), "minecraft:overworld");
+        RegistryKey<World> worldKey = RegistryKey.of(RegistryKeys.WORLD, Identifier.of(dimensionId));
+        ServerWorld targetWorld = server.getWorld(worldKey);
+        if (targetWorld == null) targetWorld = server.getOverworld();
+        if (rp != null)
+            player.teleport(targetWorld, rp[0], rp[1], rp[2], Set.of(), (float) rp[3], (float) rp[4], false);
+        else
+            player.teleport(targetWorld, 0.5, 64, 0.5, Set.of(), 0f, 0f, false);
     }
 
     private static void sendLimboScreen(ServerPlayerEntity player) {
@@ -247,5 +242,34 @@ public class LimboManager {
             if (player == null || player.isDisconnected()) continue;
             sendLimboScreen(player);
         }
+    }
+
+    public static boolean isInLimbo(UUID uuid)    { return inLimbo.contains(uuid); }
+    public static boolean isPendingAuth(UUID uuid) { return pendingAuth.contains(uuid); }
+    public static double[] getReturnPoint(UUID uuid) { return returnPoints.get(uuid); }
+
+    public static String getReturnDimensionForSave(UUID uuid) {
+        return returnDimensions.getOrDefault(uuid, "minecraft:overworld");
+    }
+
+    public static void removeFromLimbo(UUID uuid) { cleanup(uuid); }
+
+    public static void clearAll() {
+        preLimbo.clear();
+        returnPoints.clear();
+        returnDimensions.clear();
+        inLimbo.clear();
+        pendingAuth.clear();
+        preResolvedReturnPoints.clear();
+        pendingStats.clear();
+    }
+
+    private static void cleanup(UUID uuid) {
+        preLimbo.remove(uuid);
+        returnPoints.remove(uuid);
+        returnDimensions.remove(uuid);
+        inLimbo.remove(uuid);
+        pendingAuth.remove(uuid);
+        pendingStats.remove(uuid);
     }
 }

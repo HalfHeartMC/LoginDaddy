@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "org.halfheart.logindaddy.client.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "GameMenuScreenMixin",
+    "DeathScreenMixin",
+    "ButtonWidgetAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

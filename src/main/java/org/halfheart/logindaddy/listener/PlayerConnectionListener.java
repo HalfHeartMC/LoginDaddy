@@ -1,13 +1,12 @@
 package org.halfheart.logindaddy.listener;
 
-import org.halfheart.logindaddy.LoginDaddy;
-import org.halfheart.logindaddy.limbo.LimboManager;
-import org.halfheart.logindaddy.network.LoginDaddyPayload;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
-import net.minecraft.world.World;
+import org.halfheart.logindaddy.LoginDaddy;
+import org.halfheart.logindaddy.database.DatabaseManager;
+import org.halfheart.logindaddy.limbo.LimboManager;
+import org.halfheart.logindaddy.network.LoginDaddyPayload;
 
 import java.util.Set;
 import java.util.UUID;
@@ -25,34 +24,77 @@ public class PlayerConnectionListener {
             if (!server.isDedicated()) return;
 
             ServerPlayerEntity player = handler.getPlayer();
-            UUID uuid = player.getUuid();
+            UUID   uuid     = player.getUuid();
             String username = player.getName().getString();
 
             LoginDaddy.LOGGER.info("[LoginDaddy] {} joined, starting handshake...", username);
-
             LoginDaddy.validatedPlayers.remove(uuid);
             pendingHandshake.add(uuid);
 
-            double joinX = player.getX();
-            double joinY = player.getY();
-            double joinZ = player.getZ();
-            float joinYaw = player.getYaw();
-            float joinPitch = player.getPitch();
+            DatabaseManager.PlayerData data =
+                    LoginDaddy.getDatabaseManager().loadAndDeletePlayerData(uuid.toString());
 
-            if (player.getHealth() <= 0f) {
-                player.setHealth(player.getMaxHealth());
+            double joinX, joinY, joinZ;
+            float  joinYaw, joinPitch;
+            boolean wasDead = false;
+
+            double[] preResolved = LimboManager.consumePreResolvedReturnPoint(uuid);
+
+            if (preResolved != null) {
+                joinX = preResolved[0]; joinY = preResolved[1]; joinZ = preResolved[2];
+                joinYaw  = (float) preResolved[3]; joinPitch = (float) preResolved[4];
+                wasDead = true;
+                LoginDaddy.LOGGER.info("[LoginDaddy] {} was dead, using resolved respawn point", username);
+            } else if (data != null && data.died) {
+                joinX = player.getX(); joinY = player.getY(); joinZ = player.getZ();
+                joinYaw = player.getYaw(); joinPitch = player.getPitch();
+                wasDead = true;
+                LoginDaddy.LOGGER.info("[LoginDaddy] {} had died last session, using vanilla coords", username);
+            } else if (data != null) {
+                joinX = data.x; joinY = data.y; joinZ = data.z;
+                joinYaw = data.yaw; joinPitch = data.pitch;
+                LoginDaddy.LOGGER.info("[LoginDaddy] {} using saved position from DB", username);
+            } else {
+                joinX = player.getX(); joinY = player.getY(); joinZ = player.getZ();
+                joinYaw = player.getYaw(); joinPitch = player.getPitch();
             }
 
-            LimboManager.enterLimbo(player, server, joinX, joinY, joinZ, joinYaw, joinPitch);
+            String returnDimension;
+            if (wasDead) {
+                returnDimension = "minecraft:overworld";
+            } else if (data != null) {
+                returnDimension = data.dimension;
+            } else {
+                returnDimension = player.getEntityWorld().getRegistryKey().getValue().toString();
+            }
+
+            float restoreHealth;
+            int   restoreFood;
+            float restoreSaturation;
+
+            if (data != null) {
+                restoreHealth     = data.health;
+                restoreFood       = data.food;
+                restoreSaturation = data.saturation;
+            } else {
+                restoreHealth     = player.getHealth();
+                restoreFood       = player.getHungerManager().getFoodLevel();
+                restoreSaturation = player.getHungerManager().getSaturationLevel();
+            }
+
+            LimboManager.setPendingStats(uuid, restoreHealth, restoreFood, restoreSaturation);
+            LimboManager.enterLimbo(player, server,
+                    joinX, joinY, joinZ, joinYaw, joinPitch,
+                    returnDimension);
+
             sender.sendPacket(new LoginDaddyPayload());
 
             Thread handshakeThread = new Thread(() -> {
                 long start = System.currentTimeMillis();
                 while (System.currentTimeMillis() - start < HANDSHAKE_TIMEOUT_MS) {
-                    try { Thread.sleep(200); } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
+                    try { Thread.sleep(200); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+
                     if (LoginDaddy.validatedPlayers.contains(uuid)) {
                         pendingHandshake.remove(uuid);
                         return;
@@ -85,21 +127,56 @@ public class PlayerConnectionListener {
             if (!server.isDedicated()) return;
 
             ServerPlayerEntity player = handler.getPlayer();
-            UUID uuid = player.getUuid();
+            UUID   uuid     = player.getUuid();
+            String username = player.getName().getString();
 
-            if (LimboManager.isInLimbo(uuid)) {
-                double[] rp = LimboManager.getReturnPoint(uuid);
-                ServerWorld overworld = server.getWorld(World.OVERWORLD);
-                if (overworld != null) {
-                    double x   = rp != null ? rp[0] : 0.5;
-                    double y   = rp != null ? rp[1] : 64.0;
-                    double z   = rp != null ? rp[2] : 0.5;
-                    float  yaw = rp != null ? (float) rp[3] : 0f;
-                    float  pit = rp != null ? (float) rp[4] : 0f;
-                    player.setServerWorld(overworld);
-                    player.refreshPositionAndAngles(x, y, z, yaw, pit);
-                }
+            if (player.hasVehicle()) player.stopRiding();
+            for (net.minecraft.entity.Entity passenger : player.getPassengerList()) passenger.stopRiding();
+
+            boolean isInLimbo = LimboManager.isInLimbo(uuid);
+            double[] rp       = LimboManager.getReturnPoint(uuid);
+            boolean died      = player.getHealth() <= 0f;
+
+            double saveX, saveY, saveZ;
+            float  saveYaw, savePitch;
+
+            if (isInLimbo && rp != null) {
+                saveX = rp[0]; saveY = rp[1]; saveZ = rp[2];
+                saveYaw = (float) rp[3]; savePitch = (float) rp[4];
+            } else {
+                saveX = player.getX(); saveY = player.getY(); saveZ = player.getZ();
+                saveYaw = player.getYaw(); savePitch = player.getPitch();
             }
+
+            float saveHealth;
+            int   saveFood;
+            float saveSaturation;
+
+            if (died) {
+                saveHealth     = player.getMaxHealth();
+                saveFood       = 20;
+                saveSaturation = 5.0f;
+            } else {
+                saveHealth     = player.getHealth();
+                saveFood       = player.getHungerManager().getFoodLevel();
+                saveSaturation = player.getHungerManager().getSaturationLevel();
+            }
+
+            String saveDimension;
+            if (isInLimbo && rp != null) {
+                saveDimension = LimboManager.getReturnDimensionForSave(uuid);
+            } else {
+                saveDimension = player.getEntityWorld().getRegistryKey().getValue().toString();
+            }
+
+            LoginDaddy.getDatabaseManager().savePlayerData(
+                    uuid.toString(),
+                    saveX, saveY, saveZ, saveYaw, savePitch,
+                    saveHealth, saveFood, saveSaturation,
+                    died, saveDimension);
+
+            LoginDaddy.LOGGER.info("[LoginDaddy] Saved data for {} (died={}, dim={})",
+                    username, died, saveDimension);
 
             LoginDaddy.validatedPlayers.remove(uuid);
             LimboManager.removeFromLimbo(uuid);

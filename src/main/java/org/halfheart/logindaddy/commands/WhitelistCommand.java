@@ -12,7 +12,8 @@ public class WhitelistCommand {
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
         dispatcher.register(
                 CommandManager.literal("logindaddy")
-                        .requires(source -> source.getEntity() == null)
+                        .requires(source -> source.getEntity() == null ||
+                                (source.getPlayer() != null && source.getServer().getPlayerManager().isOperator(source.getPlayer().getPlayerConfigEntry())))
                         .then(CommandManager.literal("whitelist")
                                 .then(CommandManager.literal("add")
                                         .then(CommandManager.argument("username", StringArgumentType.word())
@@ -43,6 +44,19 @@ public class WhitelistCommand {
                                                     return 0;
                                                 })
                                         )
+                                )
+                                .then(CommandManager.literal("list")
+                                        .executes(ctx -> {
+                                            java.util.List<String> players = LoginDaddy.getDatabaseManager().getWhitelistedPlayers();
+                                            if (players.isEmpty()) {
+                                                ctx.getSource().sendFeedback(() ->
+                                                        Text.literal("\u00a77No players are whitelisted."), false);
+                                                return 1;
+                                            }
+                                            ctx.getSource().sendFeedback(() ->
+                                                    Text.literal("\u00a76\u00a7lWhitelisted Players \u00a77(" + players.size() + "):\u00a7f " + String.join(", ", players)), false);
+                                            return 1;
+                                        })
                                 )
                         )
         );
