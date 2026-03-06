@@ -20,6 +20,7 @@ import net.minecraft.world.GameMode;
 import net.minecraft.world.World;
 import org.halfheart.logindaddy.LoginDaddy;
 import org.halfheart.logindaddy.network.LoginDaddyPayload;
+import org.halfheart.logindaddy.session.SessionManager;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -127,6 +128,12 @@ public class LimboManager {
 
         pendingAuth.add(player.getUuid());
 
+        if (SessionManager.tryAutoLogin(player)) {
+            LoginDaddy.LOGGER.info("[Limbo] {} auto-logged in via session cache", username);
+            releaseLimbo(player, server);
+            return;
+        }
+
         player.networkHandler.sendPacket(new TitleFadeS2CPacket(5, 999999, 5));
         player.networkHandler.sendPacket(new TitleS2CPacket(Text.literal("\u00a76\u00a7lLoginDaddy")));
         player.networkHandler.sendPacket(new SubtitleS2CPacket(Text.literal("\u00a7eAuthenticate to play")));
@@ -191,6 +198,7 @@ public class LimboManager {
 
         player.sendMessage(Text.literal("\u00a7a\u00a7l\u2714 Welcome to the server!"), false);
 
+        SessionManager.login(player);
         ServerPlayNetworking.send(player, new LoginDaddyPayload(true));
 
         LoginDaddy.LOGGER.info("[Limbo] {} released to {}", player.getName().getString(), dimensionId);

@@ -1,10 +1,14 @@
 package org.halfheart.logindaddy.database;
 
+import net.fabricmc.loader.api.FabricLoader;
 import org.halfheart.logindaddy.LoginDaddy;
 import org.halfheart.logindaddy.config.ConfigManager;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.sql.*;
 import java.util.Base64;
@@ -12,6 +16,7 @@ import java.util.Base64;
 public class DatabaseManager {
     private Connection connection;
     private final String databaseType;
+    private final ConfigManager config;
 
     private static final int ITERATIONS = 65536;
     private static final int KEY_LENGTH  = 256;
@@ -38,6 +43,7 @@ public class DatabaseManager {
     }
 
     public DatabaseManager(ConfigManager config) {
+        this.config = config;
         this.databaseType = config.getDatabaseType();
         try {
             if (databaseType.equalsIgnoreCase("mysql")) {
@@ -53,8 +59,14 @@ public class DatabaseManager {
     }
 
     private void connectSQLite() throws Exception {
+        Path dbDir = FabricLoader.getInstance().getConfigDir().resolve("LoginDaddy");
+        try {
+            Files.createDirectories(dbDir);
+        } catch (IOException e) {
+            LoginDaddy.LOGGER.error("Failed to create config directory for SQLite", e);
+        }
         Class.forName("org.sqlite.JDBC");
-        connection = DriverManager.getConnection("jdbc:sqlite:logindaddy.db");
+        connection = DriverManager.getConnection("jdbc:sqlite:" + dbDir.resolve("logindaddy.db"));
     }
 
     private void connectMySQL(ConfigManager config) throws Exception {
@@ -116,6 +128,7 @@ public class DatabaseManager {
                                double x, double y, double z, float yaw, float pitch,
                                float health, int food, float saturation,
                                boolean died, String dimension) {
+        ensureConnection();
         if (connection == null) return;
 
         String sql = databaseType.equalsIgnoreCase("mysql")
@@ -149,6 +162,7 @@ public class DatabaseManager {
     }
 
     public PlayerData loadAndDeletePlayerData(String uuid) {
+        ensureConnection();
         if (connection == null) return null;
         try {
             PlayerData data = null;
@@ -197,6 +211,7 @@ public class DatabaseManager {
 
     public java.util.List<String> getWhitelistedPlayers() {
         java.util.List<String> players = new java.util.ArrayList<>();
+        ensureConnection();
         if (connection == null) return players;
         try (PreparedStatement stmt = connection.prepareStatement(
                 "SELECT username FROM whitelist ORDER BY username ASC")) {
@@ -221,6 +236,7 @@ public class DatabaseManager {
     }
 
     public boolean verifyPassword(String username, String password) {
+        ensureConnection();
         if (connection == null) return false;
         try (PreparedStatement stmt = connection.prepareStatement(
                 "SELECT password_hash FROM users WHERE LOWER(username) = LOWER(?)")) {
@@ -240,6 +256,7 @@ public class DatabaseManager {
     }
 
     private boolean queryExists(String sql, String param) {
+        ensureConnection();
         if (connection == null) return false;
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, param);
@@ -251,6 +268,7 @@ public class DatabaseManager {
     }
 
     private int executeUpdate(String sql, String... params) {
+        ensureConnection();
         if (connection == null) return 0;
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             for (int i = 0; i < params.length; i++) stmt.setString(i + 1, params[i]);
@@ -294,6 +312,25 @@ public class DatabaseManager {
         } catch (Exception e) {
             LoginDaddy.LOGGER.error("Error verifying hash", e);
             return false;
+        }
+    }
+
+    public void ensureConnection() {
+        try {
+            if (connection != null && !connection.isClosed() && connection.isValid(2)) return;
+            LoginDaddy.LOGGER.warn("Database connection lost, reconnecting...");
+            try {
+                if (connection != null && !connection.isClosed()) connection.close();
+            } catch (SQLException ignored) {}
+            if (databaseType.equalsIgnoreCase("mysql")) {
+                connectMySQL(config);
+            } else {
+                connectSQLite();
+            }
+            createTables();
+            LoginDaddy.LOGGER.info("Database reconnected ({})", databaseType);
+        } catch (Exception e) {
+            LoginDaddy.LOGGER.error("Database reconnection failed: ", e);
         }
     }
 

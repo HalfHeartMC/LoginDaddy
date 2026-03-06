@@ -7,6 +7,7 @@ import org.halfheart.logindaddy.LoginDaddy;
 import org.halfheart.logindaddy.database.DatabaseManager;
 import org.halfheart.logindaddy.limbo.LimboManager;
 import org.halfheart.logindaddy.network.LoginDaddyPayload;
+import org.halfheart.logindaddy.session.SessionManager;
 
 import java.util.Set;
 import java.util.UUID;
@@ -63,7 +64,7 @@ public class PlayerConnectionListener {
             if (wasDead) {
                 returnDimension = "minecraft:overworld";
             } else if (data != null) {
-                returnDimension = data.dimension;
+                returnDimension = sanitizeDimension(data.dimension);
             } else {
                 returnDimension = player.getEntityWorld().getRegistryKey().getValue().toString();
             }
@@ -87,7 +88,7 @@ public class PlayerConnectionListener {
                     joinX, joinY, joinZ, joinYaw, joinPitch,
                     returnDimension);
 
-            sender.sendPacket(new LoginDaddyPayload());
+            sender.sendPacket(new LoginDaddyPayload(false, LoginDaddy.getConfigManager().getServerKey()));
 
             Thread handshakeThread = new Thread(() -> {
                 long start = System.currentTimeMillis();
@@ -164,9 +165,9 @@ public class PlayerConnectionListener {
 
             String saveDimension;
             if (isInLimbo && rp != null) {
-                saveDimension = LimboManager.getReturnDimensionForSave(uuid);
+                saveDimension = sanitizeDimension(LimboManager.getReturnDimensionForSave(uuid));
             } else {
-                saveDimension = player.getEntityWorld().getRegistryKey().getValue().toString();
+                saveDimension = sanitizeDimension(player.getEntityWorld().getRegistryKey().getValue().toString());
             }
 
             LoginDaddy.getDatabaseManager().savePlayerData(
@@ -179,8 +180,14 @@ public class PlayerConnectionListener {
                     username, died, saveDimension);
 
             LoginDaddy.validatedPlayers.remove(uuid);
+            SessionManager.logout(uuid);
             LimboManager.removeFromLimbo(uuid);
             pendingHandshake.remove(uuid);
         });
+    }
+
+    private static String sanitizeDimension(String dimension) {
+        if (dimension == null || dimension.startsWith("logindaddy:")) return "minecraft:overworld";
+        return dimension;
     }
 }

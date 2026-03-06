@@ -16,7 +16,9 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.api.EnvType;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
+import org.halfheart.logindaddy.session.SessionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,11 +51,32 @@ public class LoginDaddy implements ModInitializer {
         configManager = new ConfigManager();
         configManager.loadConfig();
         databaseManager = new DatabaseManager(configManager);
+        SessionManager.loadSessions();
 
         ServerPlayNetworking.registerGlobalReceiver(LoginDaddyPayload.ID, (payload, context) -> {
             context.server().execute(() -> {
                 ServerPlayerEntity player = context.player();
                 if (player == null) return;
+
+                String expectedKey = configManager.getServerKey();
+                String submittedKey = payload.serverKey();
+
+                if (!expectedKey.isEmpty() && submittedKey.isEmpty()) {
+                    validatedPlayers.add(player.getUuid());
+                    LOGGER.info("[LoginDaddy] {} mod confirmed, awaiting key screen submission", player.getName().getString());
+                    return;
+                }
+
+                if (!expectedKey.isEmpty() && !submittedKey.equals(expectedKey)) {
+                    LOGGER.info("[LoginDaddy] {} sent wrong server key - kicking", player.getName().getString());
+                    player.networkHandler.disconnect(Text.literal(
+                            "\u00a7c\u00a7lWrong Server Key\n\n" +
+                                    "\u00a77The key you entered does not match this server."
+                    ));
+                    LimboManager.removeFromLimbo(player.getUuid());
+                    return;
+                }
+
                 validatedPlayers.add(player.getUuid());
                 LOGGER.info("Handshake confirmed for {}", player.getName().getString());
                 LimboManager.tryRelease(player, context.server());
@@ -68,9 +91,14 @@ public class LoginDaddy implements ModInitializer {
 
         PlayerConnectionListener.register();
 
+        ServerLifecycleEvents.AFTER_SAVE.register((server, flush, force) -> {
+            if (databaseManager != null) databaseManager.ensureConnection();
+        });
+
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             if (databaseManager != null) databaseManager.close();
             validatedPlayers.clear();
+            SessionManager.clearLoggedIn();
             LimboManager.clearAll();
         });
 

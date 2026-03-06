@@ -5,6 +5,8 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.minecraft.client.gui.screen.DeathScreen;
 import org.halfheart.logindaddy.client.limbo.ClientLimboState;
+import org.halfheart.logindaddy.client.managers.ServerKeyManager;
+import org.halfheart.logindaddy.client.screen.ServerKeyScreen;
 import org.halfheart.logindaddy.network.LoginDaddyPayload;
 
 public class LoginDaddyClient implements ClientModInitializer {
@@ -32,7 +34,21 @@ public class LoginDaddyClient implements ClientModInitializer {
                         context.client().setScreen(null);
                     }
 
-                    ClientPlayNetworking.send(new LoginDaddyPayload(false));
+                    String serverKey = payload.serverKey();
+                    String serverAddress = ServerKeyManager.getCurrentServerAddress(context.client());
+
+                    if (!serverKey.isEmpty()) {
+                        String savedKey = ServerKeyManager.getSavedKey(serverAddress);
+                        if (savedKey != null && savedKey.equals(serverKey)) {
+                            ClientPlayNetworking.send(new LoginDaddyPayload(false, serverKey));
+                        } else {
+                            boolean keyChanged = savedKey != null && !savedKey.equals(serverKey);
+                            ClientPlayNetworking.send(new LoginDaddyPayload(false, ""));
+                            context.client().setScreen(new ServerKeyScreen(serverAddress, serverKey, keyChanged));
+                        }
+                    } else {
+                        ClientPlayNetworking.send(new LoginDaddyPayload(false, ""));
+                    }
                 });
             }
         });
